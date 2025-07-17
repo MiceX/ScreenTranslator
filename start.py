@@ -56,7 +56,7 @@ def calculate_diff(img_print_1, img_print_2):
 # --- Функции потоков ---
 def worker_thread():
     """
-    Поток, который выполняет основную работу по захвату, распознаванию и переводу.
+    Поток, который выполняет основную работу по распознаванию и переводу.
     """
     print("Поток-обработчик запущен.")
     try:
@@ -151,7 +151,6 @@ def setup_hotkey_listener():
     
     print("Поток слушателя клавиатуры завершен.")
 
-
 # --- Функции для GUI ---
 
 class App(tk.Tk):
@@ -206,7 +205,7 @@ class App(tk.Tk):
         self.protocol("WM_DELETE_WINDOW", self.on_closing)
         
         # Запускаем периодическую проверку очереди
-        self.check_queue()
+        self.run_work()
 
     def _capture_screen(self):
         """Делает снимок указанной области и возвращает его как объект PIL.Image."""
@@ -214,59 +213,58 @@ class App(tk.Tk):
         img = Image.frombytes("RGB", sct_img.size, sct_img.bgra, "raw", "BGRX")
         return img
 
-    def check_queue(self):
-        """
-        Проверяет очередь gui_queue на наличие новых DTO
-        и обновляет GUI в соответствии с командой.
-        """
+    def run_work(self):
         try:
             message_dto: Message = gui_queue.get_nowait()
 
-            if message_dto.command == Command.REQUEST_CAPTURE:
-                # Скрываем окно на время снимка, если оно видимо
-                is_currently_visible = self.state() == 'normal'
-                if is_currently_visible:
-                    self.withdraw() # Скрываем окно
-                    self.update_idletasks() # Принудительно обновляем GUI
+            match message_dto.command:
+                case Command.REQUEST_CAPTURE:
+                    # Скрываем окно на время снимка, если оно видимо
+                    is_currently_visible = self.state() == 'normal'
+                    if is_currently_visible:
+                        self.withdraw() # Скрываем окно
+                        self.update_idletasks() # Принудительно обновляем GUI
 
-                img = self._capture_screen()
+                    img = self._capture_screen()
 
-                if is_currently_visible:
-                    self.deiconify() # Показываем окно обратно
+                    if is_currently_visible:
+                        self.deiconify() # Показываем окно обратно
 
-                # Отправляем изображение worker'у, не блокируя GUI
-                try:
-                    capture_queue.put_nowait(img)
-                except queue.Full:
-                    pass # Worker занят, пропускаем этот кадр
+                    # Отправляем изображение worker'у, не блокируя GUI
+                    try:
+                        capture_queue.put_nowait(img)
+                    except queue.Full:
+                        pass # Worker занят, пропускаем этот кадр
 
-            if message_dto.command == Command.STOP:
-                self.on_closing()
-                return # Больше не планируем проверку
+                case Command.STOP:
+                    self.on_closing()
+                    return # Больше не планируем проверку
 
-            if message_dto.command == Command.TOGGLE_OSD:
-                self.osd_enabled_by_user = not self.osd_enabled_by_user
-                if self.osd_enabled_by_user:
-                    self.deiconify()
-                else:
-                    self.withdraw()
-                print(f"OSD {'включен' if self.osd_enabled_by_user else 'выключен'} по горячей клавише.")
+                case Command.TOGGLE_OSD:
+                    self.osd_enabled_by_user = not self.osd_enabled_by_user
+                    if self.osd_enabled_by_user:
+                        self.info_label.config(text="...")
+                        self.deiconify()
+                    else:
+                        self.withdraw()
+                    print(f"OSD {'включен' if self.osd_enabled_by_user else 'выключен'} по горячей клавише.")
 
-            elif message_dto.command == Command.SHOW:
-                # Отображаем, только если OSD включен пользователем
-                if self.osd_enabled_by_user:
-                    self.info_label.config(text=message_dto.payload)
-                    self.deiconify()
-            elif message_dto.command == Command.HIDE:
-                if self.osd_enabled_by_user:
-                    self.withdraw()
+                case Command.SHOW:
+                    # Отображаем, только если OSD включен пользователем
+                    if self.osd_enabled_by_user:
+                        self.info_label.config(text=message_dto.payload)
+                        self.deiconify()
+
+                case Command.HIDE:
+                    if self.osd_enabled_by_user:
+                        self.withdraw()
 
         except queue.Empty:
             # Очередь пуста, ничего не делаем
             pass
         
         if not shutdown_event.is_set():
-            self.after(100, self.check_queue)
+            self.after(100, self.run_work)
 
     def on_closing(self):
         """
