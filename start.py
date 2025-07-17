@@ -1,3 +1,4 @@
+import os
 import tkinter as tk
 from tkinter import font
 import threading
@@ -83,6 +84,13 @@ def worker_thread():
             if img is None:
                 break
             
+            # ПРОВЕРКА: Убедимся, что у изображения есть размеры (ширина и высота > 0).
+            # Tesseract выводит ошибки в консоль, если ему передать изображение с нулевыми размерами.
+            # Это может случиться, если 'text_area' находится за пределами экрана.
+            if img.width == 0 or img.height == 0:
+                print("Предупреждение: Пропущен кадр, т.к. область захвата может быть за пределами экрана.")
+                continue
+
             # 3. Сравнение с предыдущим снимком
             current_image_print = calculate_image_print(img)
             if last_image_print is not None:
@@ -165,18 +173,19 @@ class App(tk.Tk):
         # Удаляем рамку и делаем окно без рамки (как в osd_test.py)
         self.overrideredirect(True)
         self.wm_attributes("-topmost", True) # Всегда сверху
-        self.wm_attributes("-disabled", True) # Прозрачность для кликов
 
         # Настраиваем прозрачность (по аналогии с osd_test.py)
         if self.tk.call('tk', 'windowingsystem') == 'win32':
+            self.wm_attributes("-disabled", True) # Прозрачность для кликов
             self.wm_attributes('-alpha', 0.7)
             self.bg_color = "black"
         else:
+            self.wm_attributes("-type", "splash")
             self.attributes('-alpha', 0.7)
             self.bg_color = "#333333"
 
-        # Используем шрифт по умолчанию, но делаем его жирным
         default_font = tk.font.Font(name="TkDefaultFont", exists=True)
+        # Используем шрифт по умолчанию, но делаем его жирным
         default_font.configure(size=16, weight="normal")
         
         # Создаем Label для отображения текста
