@@ -1,4 +1,6 @@
-import wx
+from PySide6.QtWidgets import QApplication, QWidget, QLabel, QVBoxLayout
+from PySide6.QtCore import Qt, QTimer
+from PySide6.QtGui import QFont
 import threading
 import queue
 from pynput import keyboard
@@ -130,10 +132,12 @@ def setup_hotkey_listener():
     print("Поток слушателя клавиатуры запущен.")
     
     def on_toggle_osd():
+        global osd_enabled_by_user
         print("Нажата комбинация Ctrl+`. Переключение OSD.")
         osd_enabled_by_user = not osd_enabled_by_user
         if osd_enabled_by_user:
-            gui_queue.put(Message(command=Command.SHOW))
+            # Команда SHOW без payload просто покажет окно с последним текстом
+            gui_queue.put(Message(command=Command.SHOW, payload=None))
         else:
             gui_queue.put(Message(command=Command.HIDE))
 
@@ -152,67 +156,76 @@ def setup_hotkey_listener():
     
     print("Поток слушателя клавиатуры завершен.")
 
-# --- GUI на wxPython ---
+# --- GUI на PySide6 ---
 
-class WxAppFrame(wx.Frame):
-    def __init__(self, parent, title):
-        # Стиль для окна без рамки, всегда наверху и прозрачного для кликов
-        style = wx.NO_BORDER | wx.STAY_ON_TOP | wx.FRAME_NO_TASKBAR | wx.TRANSPARENT_WINDOW
-        
-        super(WxAppFrame, self).__init__(parent, title=title, style=style)
+class PySideFrame(QWidget):
+    
+    was_hidden_signal = threading.Event()
+    
+    def __init__(self):
+        super().__init__()
 
+        # Настройка флагов окна
+        self.setWindowFlags(
+            Qt.WindowType.FramelessWindowHint |    # Окно без рамки
+            Qt.WindowType.WindowDoesNotAcceptFocus |
+            Qt.WindowType.WindowTransparentForInput | # Прозрачность для кликов мыши
+            Qt.WindowType.SplashScreen |
+            Qt.WindowType.WindowStaysOnTopHint |   # Поверх всех окон
+            Qt.WindowType.Tool                   # Не показывать в панели задач
+        )
+        # Атрибут для поддержки полной прозрачности фона
+        self.setAttribute(Qt.WidgetAttribute.WA_TranslucentBackground)
+
+        # Исключение окна из захвата экрана на Windows
         if sys.platform == "win32":
             try:
-                # Эта функция делает окно "невидимым" для стандартных API захвата экрана.
-                # Это позволяет mss захватывать то, что находится ПОД нашим окном, без его скрытия.
-                # WDA_EXCLUDEFROMCAPTURE = 0x00000011
-                hwnd = self.GetHandle()
+                hwnd = self.winId()
                 ctypes.windll.user32.SetWindowDisplayAffinity(hwnd, 0x00000011)
             except Exception as e:
                 print(f"Не удалось установить атрибут окна для исключения из захвата: {e}")
 
         self.sct = mss.mss()
 
-        self.SetPosition((text_area['left'], text_area['top']))
-        self.SetSize((text_area['width'], text_area['height']))
+        # Установка геометрии и стилей
+        self.setGeometry(text_area['left'], text_area['top'], text_area['width'], text_area['height'])
+        self.setStyleSheet(f"""
+            background-color: rgba(0, 0, 0, 70%);
+            color: white;
+            padding: 10px;
+        """)
 
-        # Настройка фона и прозрачности
-        self.SetBackgroundColour(wx.Colour(0, 0, 0)) # Черный фон
-        self.SetTransparent(int(255 * 0.7)) # Alpha-канал (0-255)
+        # Текстовая метка для вывода
+        self.info_label = QLabel("Запуск...", self)
+        font = QFont()
+        font.setPointSize(16)
+        self.info_label.setFont(font)
+        self.info_label.setWordWrap(True)
+        self.info_label.setAlignment(Qt.AlignmentFlag.AlignTop | Qt.AlignmentFlag.AlignLeft)
 
-        # Панель для размещения виджетов
-        panel = wx.Panel(self)
-        panel.SetBackgroundColour(wx.Colour(0, 0, 0))
+        # Размещение метки с помощью layout
+        layout = QVBoxLayout(self)
+        layout.addWidget(self.info_label)
+        self.setLayout(layout)
+        
+        # Таймер для проверки очереди
+        self.timer = QTimer(self)
+        self.timer.timeout.connect(self.run_work)
+        self.timer.start(100) # Проверять каждые 100 мс
 
-        # Текстовая метка для вывода перевода
-        self.info_label = wx.StaticText(panel, label="Запуск...")
-        self.info_label.SetForegroundColour(wx.Colour(255, 255, 255))
-
-        font = wx.Font(16, wx.FONTFAMILY_DEFAULT, wx.FONTSTYLE_NORMAL, wx.FONTWEIGHT_NORMAL)
-        self.info_label.SetFont(font)
-        self.info_label.Wrap(text_area["width"] - 20)
-
-        # Размещение метки на панели с помощью сайзера
-        sizer = wx.BoxSizer(wx.VERTICAL)
-        sizer.Add(self.info_label, 1, wx.EXPAND | wx.ALL, 10)
-        panel.SetSizer(sizer)
-
-        # Таймер для периодической проверки очереди
-        self.timer = wx.Timer(self)
-        self.Bind(wx.EVT_TIMER, self.run_work, self.timer)
-        self.timer.Start(100) # Проверять каждые 100 мс
-
-        self.Bind(wx.EVT_CLOSE, self.on_closing)
+    def hideEvent(self, event):
+        """Перехватываем событие сокрытия окна."""
+        super().hideEvent(event) # Важно вызвать родительский метод
+        self.was_hidden_signal.set()
 
     def _capture_screen(self):
         sct_img = self.sct.grab(text_area)
         img = Image.frombytes("RGB", sct_img.size, sct_img.bgra, "raw", "BGRX")
         return img
 
-    def run_work(self, event):
+    def run_work(self):
         if shutdown_event.is_set():
-            if not self.IsBeingDeleted():
-                self.Close()
+            self.close()
             return
             
         try:
@@ -227,53 +240,44 @@ class WxAppFrame(wx.Frame):
                             capture_queue.put_nowait(img)
                         except queue.Full: pass
 
-                    # На Windows SetWindowDisplayAffinity решает проблему.
-                    # На других платформах (Linux/macOS) нужно временно убрать окно.
-                    if sys.platform == "win32":
+                    if sys.platform == "win32" or not self.isVisible():
                         capture_and_send()
                     else:
-                        is_currently_visible = self.IsShown()
-                        if is_currently_visible:
-                            self.Freeze()
-                            self.Hide()
-                            self.Thaw()
-                            print("Скрыли")
-                        
-                        def capture_and_restore():
+                        self.hide()
+
+                        self.was_hidden_signal.wait(1)
+                        self.was_hidden_signal.clear()
+                                                
+                        def capture_after_hide():
                             capture_and_send()
-                            print("Сделали снимок")
-                            if is_currently_visible:
-                                self.Show()
-                                print("Показали после скриншота")
+                            self.show()
                             
-                        wx.CallAfter(capture_and_restore)
+                        QTimer.singleShot(20, capture_after_hide)
 
                 case Command.STOP:
-                    self.Close()
+                    self.close()
                     return
 
                 case Command.SHOW:
-                    self.info_label.SetLabel(message_dto.payload)
-                    self.info_label.Wrap(text_area["width"] - 20)
-                    self.Layout()
-                    self.Show()
-                    print("Показали")
+                    if message_dto.payload is not None:
+                        self.info_label.setText(message_dto.payload)
+                    self.show()
 
                 case Command.HIDE:
-                    self.Hide()
+                    self.hide()
         except queue.Empty:
             pass
 
-    def on_closing(self, event):
+    def closeEvent(self, event):
         if not shutdown_event.is_set():
             print("Получен запрос на закрытие окна.")
             shutdown_event.set()
         
-        self.timer.Stop()
+        self.timer.stop()
         try: capture_queue.put_nowait(None)
         except queue.Full: pass
-            
-        self.Destroy()
+        
+        event.accept()
 
 if __name__ == "__main__":
     translator_worker = threading.Thread(target=translator_thread, daemon=True)
@@ -285,9 +289,9 @@ if __name__ == "__main__":
     refresher_worker = threading.Thread(target=refresher_thread, daemon=True)
     refresher_worker.start()
 
-    app = wx.App(False)
-    frame = WxAppFrame(None, "OSD Переводчик")
+    app = QApplication(sys.argv)
+    frame = PySideFrame()
     # Не показываем окно сразу, ждем первой команды
-    app.MainLoop()
+    sys.exit(app.exec())
 
     print("Программа завершена.")
