@@ -1,5 +1,4 @@
-import tkinter as tk
-from tkinter import font
+import wx
 import threading
 import queue
 from pynput import keyboard
@@ -128,18 +127,13 @@ def setup_hotkey_listener():
     print("Поток слушателя клавиатуры запущен.")
     
     def on_toggle_osd():
-        """
-        Эта функция вызывается при нажатии Ctrl+` для переключения OSD.
-        """
         print("Нажата комбинация Ctrl+`. Переключение OSD.")
         gui_queue.put(Message(command=Command.TOGGLE_OSD))
 
     def on_shutdown():
-        """
-        Эта функция вызывается при нажатии Ctrl+Shift+Q для завершения работы.
-        """
         print("Нажата комбинация Ctrl+Shift+Q. Завершение работы...")
         shutdown_event.set()
+        # Отправляем команду STOP, чтобы GUI-поток тоже корректно завершился
         gui_queue.put(Message(command=Command.STOP))
         return False
     
@@ -151,155 +145,126 @@ def setup_hotkey_listener():
     
     print("Поток слушателя клавиатуры завершен.")
 
-# --- Функции для GUI ---
+# --- GUI на wxPython ---
 
-class App(tk.Tk):
-    def __init__(self):
-        super().__init__()
-        self.sct = mss.mss() # Контекст для захвата экрана
-        self.title("OSD Переводчик") # Более подходящее название
+class WxAppFrame(wx.Frame):
+    def __init__(self, parent, title):
+        # Стиль для окна без рамки, всегда наверху и прозрачного для кликов
+        style = wx.NO_BORDER | wx.STAY_ON_TOP | wx.FRAME_NO_TASKBAR | wx.TRANSPARENT_WINDOW
+        
+        super(WxAppFrame, self).__init__(parent, title=title, style=style)
 
-        # Флаг, управляемый пользователем через горячую клавишу
+        self.sct = mss.mss()
         self.osd_enabled_by_user = True
-        
-        # Удаляем рамку и делаем окно без рамки (как в osd_test.py)
-        self.overrideredirect(True)
-        self.wm_attributes("-topmost", True) # Всегда сверху
-        self.wm_attributes("-disabled", True) # Прозрачность для кликов
 
-        # Настраиваем прозрачность (по аналогии с osd_test.py)
-        if self.tk.call('tk', 'windowingsystem') == 'win32':
-            self.wm_attributes('-alpha', 0.7)
-            self.bg_color = "black"
-        else:
-            self.attributes('-alpha', 0.7)
-            self.bg_color = "#333333"
+        self.SetPosition((text_area['left'], text_area['top']))
+        self.SetSize((text_area['width'], text_area['height']))
 
-        # Используем шрифт по умолчанию, но делаем его жирным
-        default_font = tk.font.Font(name="TkDefaultFont", exists=True)
-        default_font.configure(size=16, weight="normal")
-        
-        # Создаем Label для отображения текста
-        self.info_label = tk.Label(
-            self,
-            text="Запуск...", # Начальный текст
-            font=default_font,
-            fg="white",
-            bg=self.bg_color,
-            wraplength=text_area["width"] - 10, # Ширина окна минус горизонтальные отступы
-            justify=tk.LEFT,  # Выравнивание строк текста между собой по левому краю
-            anchor="nw"       # Размещение блока текста в левом верхнем углу виджета
-        )
-        self.info_label.pack(
-            fill=tk.BOTH,     # Заполнение по горизонтали и вертикали
-            expand=True,      # Разрешить виджету занимать все доступное пространство
-            ipadx=5, ipady=0  # Внутренние отступы
-        )
+        # Настройка фона и прозрачности
+        self.SetBackgroundColour(wx.Colour(0, 0, 0)) # Черный фон
+        self.SetTransparent(int(255 * 0.7)) # Alpha-канал (0-255)
 
-        # Размещаем окно в указанной области
-        self.geometry(
-            f"{text_area['width']}x{text_area['height']}+"
-            f"{text_area['left']}+{text_area['top']}"
-        )
-        # Привязываем закрытие окна к нашей функции
-        self.protocol("WM_DELETE_WINDOW", self.on_closing)
-        
-        # Запускаем периодическую проверку очереди
-        self.run_work()
+        # Панель для размещения виджетов
+        panel = wx.Panel(self)
+        panel.SetBackgroundColour(wx.Colour(0, 0, 0))
+
+        # Текстовая метка для вывода перевода
+        self.info_label = wx.StaticText(panel, label="Запуск...")
+        self.info_label.SetForegroundColour(wx.Colour(255, 255, 255))
+
+        font = wx.Font(16, wx.FONTFAMILY_DEFAULT, wx.FONTSTYLE_NORMAL, wx.FONTWEIGHT_NORMAL)
+        self.info_label.SetFont(font)
+        self.info_label.Wrap(text_area["width"] - 20)
+
+        # Размещение метки на панели с помощью сайзера
+        sizer = wx.BoxSizer(wx.VERTICAL)
+        sizer.Add(self.info_label, 1, wx.EXPAND | wx.ALL, 10)
+        panel.SetSizer(sizer)
+
+        # Таймер для периодической проверки очереди
+        self.timer = wx.Timer(self)
+        self.Bind(wx.EVT_TIMER, self.run_work, self.timer)
+        self.timer.Start(100) # Проверять каждые 100 мс
+
+        self.Bind(wx.EVT_CLOSE, self.on_closing)
 
     def _capture_screen(self):
-        """Делает снимок указанной области и возвращает его как объект PIL.Image."""
         sct_img = self.sct.grab(text_area)
         img = Image.frombytes("RGB", sct_img.size, sct_img.bgra, "raw", "BGRX")
         return img
 
-    def run_work(self):
+    def run_work(self, event):
+        if shutdown_event.is_set():
+            if not self.IsBeingDeleted():
+                self.Close()
+            return
+            
         try:
             message_dto: Message = gui_queue.get_nowait()
 
             match message_dto.command:
                 case Command.REQUEST_CAPTURE:
-                    # Скрываем окно на время снимка, если оно видимо
-                    is_currently_visible = self.state() == 'normal'
+                    is_currently_visible = self.IsShown()
                     if is_currently_visible:
-                        self.withdraw() # Скрываем окно
-                        self.update_idletasks() # Принудительно обновляем GUI
+                        self.Hide()
+                        wx.Yield() # Даем GUI время обработать событие скрытия
 
                     img = self._capture_screen()
-
+                    
                     if is_currently_visible:
-                        self.deiconify() # Показываем окно обратно
-
-                    # Отправляем изображение worker'у, не блокируя GUI
-                    try:
-                        capture_queue.put_nowait(img)
-                    except queue.Full:
-                        pass # Worker занят, пропускаем этот кадр
+                        self.Show()
+                    
+                    try: capture_queue.put_nowait(img)
+                    except queue.Full: pass
 
                 case Command.STOP:
-                    self.on_closing()
-                    return # Больше не планируем проверку
+                    self.Close()
+                    return
 
                 case Command.TOGGLE_OSD:
                     self.osd_enabled_by_user = not self.osd_enabled_by_user
                     if self.osd_enabled_by_user:
-                        self.info_label.config(text="...")
-                        self.deiconify()
+                        self.info_label.SetLabel("...")
+                        self.info_label.Wrap(text_area["width"] - 20)
+                        self.Show()
                     else:
-                        self.withdraw()
+                        self.Hide()
                     print(f"OSD {'включен' if self.osd_enabled_by_user else 'выключен'} по горячей клавише.")
 
                 case Command.SHOW:
-                    # Отображаем, только если OSD включен пользователем
                     if self.osd_enabled_by_user:
-                        self.info_label.config(text=message_dto.payload)
-                        self.deiconify()
+                        self.info_label.SetLabel(message_dto.payload)
+                        self.info_label.Wrap(text_area["width"] - 20)
+                        self.Layout()
+                        self.Show()
 
                 case Command.HIDE:
                     if self.osd_enabled_by_user:
-                        self.withdraw()
-
+                        self.Hide()
         except queue.Empty:
-            # Очередь пуста, ничего не делаем
             pass
-        
-        if not shutdown_event.is_set():
-            self.after(100, self.run_work)
 
-    def on_closing(self):
-        """
-        Вызывается при закрытии окна или нажатии Ctrl+~.
-        """
+    def on_closing(self, event):
         if not shutdown_event.is_set():
             print("Получен запрос на закрытие окна.")
-            # Устанавливаем событие, чтобы все потоки завершились
             shutdown_event.set()
-
-        # Разблокируем worker_thread, если он ждет изображение в очереди
-        try:
-            capture_queue.put_nowait(None)
-        except queue.Full:
-            # Если очередь полна, значит worker еще не забрал предыдущий кадр.
-            # Он увидит shutdown_event, как только освободится.
-            pass
-
-        self.after(200, self.destroy)
-
-# --- Точка входа в программу ---
+        
+        self.timer.Stop()
+        try: capture_queue.put_nowait(None)
+        except queue.Full: pass
+            
+        self.Destroy()
 
 if __name__ == "__main__":
-    # 1. Создаем и запускаем поток-обработчик
     worker = threading.Thread(target=worker_thread, daemon=True)
     worker.start()
     
-    # 2. Создаем и запускаем поток-слушатель клавиатуры
     listener = threading.Thread(target=setup_hotkey_listener, daemon=True)
     listener.start()
 
-    # 3. Создаем и запускаем GUI в основном потоке
-    app = App()
-    app.mainloop()
+    app = wx.App(False)
+    frame = WxAppFrame(None, "OSD Переводчик")
+    # Не показываем окно сразу, ждем первой команды
+    app.MainLoop()
 
-    # После выхода из mainloop программа завершится.
-    # daemon=True гарантирует, что фоновые потоки не помешают выходу.
     print("Программа завершена.")
