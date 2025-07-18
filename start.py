@@ -3,6 +3,8 @@ import threading
 import queue
 from pynput import keyboard
 from enum import Enum, auto
+import sys
+import ctypes
 from dataclasses import dataclass
 import mss
 import numpy as np
@@ -154,6 +156,16 @@ class WxAppFrame(wx.Frame):
         
         super(WxAppFrame, self).__init__(parent, title=title, style=style)
 
+        if sys.platform == "win32":
+            try:
+                # Эта функция делает окно "невидимым" для стандартных API захвата экрана.
+                # Это позволяет mss захватывать то, что находится ПОД нашим окном, без его скрытия.
+                # WDA_EXCLUDEFROMCAPTURE = 0x00000011
+                hwnd = self.GetHandle()
+                ctypes.windll.user32.SetWindowDisplayAffinity(hwnd, 0x00000011)
+            except Exception as e:
+                print(f"Не удалось установить атрибут окна для исключения из захвата: {e}")
+
         self.sct = mss.mss()
         self.osd_enabled_by_user = True
 
@@ -204,17 +216,11 @@ class WxAppFrame(wx.Frame):
 
             match message_dto.command:
                 case Command.REQUEST_CAPTURE:
-                    is_currently_visible = self.IsShown()
-                    if is_currently_visible:
-                        self.Hide()
-                        wx.Yield() # Даем GUI время обработать событие скрытия
-
+                    # Благодаря SetWindowDisplayAffinity (на Windows) нам больше не нужно прятать окно.
+                    # Оно автоматически исключается из захвата экрана.
                     img = self._capture_screen()
-                    
-                    if is_currently_visible:
-                        self.Show()
-                    
-                    try: capture_queue.put_nowait(img)
+                    try:
+                        capture_queue.put_nowait(img)
                     except queue.Full: pass
 
                 case Command.STOP:
