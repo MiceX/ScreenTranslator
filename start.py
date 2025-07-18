@@ -20,7 +20,6 @@ class Command(Enum):
     HIDE = auto() # Спрятать окно
     STOP = auto() # Остановить приложение
     REQUEST_CAPTURE = auto() # Запрос от worker'а к GUI на захват экрана
-    TOGGLE_OSD = auto() # Переключить видимость OSD
 
 @dataclass
 class Message:
@@ -38,7 +37,7 @@ capture_queue = queue.Queue(maxsize=1)
 # Событие для сигнала о завершении работы всем потокам
 shutdown_event = threading.Event()
 
-refresh_time = 1.0
+osd_enabled_by_user = True
 
 # Область для распознавания
 text_area = {"top": 865, "left": 535, "width": 840, "height": 130}
@@ -56,7 +55,7 @@ def calculate_diff(img_print_1, img_print_2):
     return (1 - score) * 100
 
 # --- Функции потоков ---
-def worker_thread():
+def translator_thread():
     """
     Поток, который выполняет основную работу по распознаванию и переводу.
     """
@@ -65,27 +64,22 @@ def worker_thread():
         ocr = tesserocr.PyTessBaseAPI(lang='eng')
         last_image_print = None
         last_text = None
-        first_time = True
 
         while not shutdown_event.is_set():
-            # Пауза перед следующим циклом
-            if not first_time:
-                if shutdown_event.wait(refresh_time):
+            try:
+                # Ждать, пока GUI-поток сделает снимок и положит его в очередь
+                img = capture_queue.get(block=True, timeout=0.5)
+            except queue.Empty:
+                continue
+
+            # рабираем всю очередь если есть и обрабатываем только последнее изображение
+            while True:
+                try:
+                    img = capture_queue.get_nowait()
+                except queue.Empty:
                     break
-            else:
-                first_time = False
-
-            # 1. Запросить у GUI-потока сделать снимок
-            gui_queue.put(Message(command=Command.REQUEST_CAPTURE))
-
-            # 2. Ждать, пока GUI-поток сделает снимок и положит его в очередь
-            img = capture_queue.get()
-
-            # Если получили None, это сигнал о завершении
-            if img is None:
-                break
             
-            # 3. Сравнение с предыдущим снимком
+            # Сравнение с предыдущим снимком
             current_image_print = calculate_image_print(img)
             if last_image_print is not None:
                 diff = calculate_diff(current_image_print, last_image_print)
@@ -93,11 +87,11 @@ def worker_thread():
                     continue
             last_image_print = current_image_print
 
-            # 4. Распознавание текста
+            # Распознавание текста
             ocr.SetImage(img)
             text = ocr.GetUTF8Text()
 
-            # 5. Проверка и обработка текста
+            # Проверка и обработка текста
             if not text.strip() or len(text.strip()) < 3:
                 last_text = None
                 gui_queue.put(Message(command=Command.HIDE))
@@ -107,13 +101,13 @@ def worker_thread():
                 continue
             last_text = text
 
-            # 6. Исправление и подготовка текста
+            # Исправление и подготовка текста
             processed_text = text.replace("|", "I").replace("\n", " ").strip()
 
-            # 7. Перевод
+            # Перевод
             translated_text = translate.translate(processed_text, "en", "ru")
 
-            # 8. Отправка результата в GUI
+            # Отправка результата в GUI
             gui_queue.put(Message(command=Command.SHOW, payload=translated_text))
     except Exception as e:
         print(f"Критическая ошибка в рабочем потоке: {e}")
@@ -121,7 +115,13 @@ def worker_thread():
         gui_queue.put(Message(command=Command.STOP))
 
     print("Поток-обработчик завершен.")
-
+    
+def refresher_thread():
+        while not shutdown_event.is_set():
+            if osd_enabled_by_user:
+                gui_queue.put(Message(command=Command.REQUEST_CAPTURE))
+            
+            shutdown_event.wait(0.5)
 
 def setup_hotkey_listener():
     """
@@ -131,7 +131,11 @@ def setup_hotkey_listener():
     
     def on_toggle_osd():
         print("Нажата комбинация Ctrl+`. Переключение OSD.")
-        gui_queue.put(Message(command=Command.TOGGLE_OSD))
+        osd_enabled_by_user = not osd_enabled_by_user
+        if osd_enabled_by_user:
+            gui_queue.put(Message(command=Command.SHOW))
+        else:
+            gui_queue.put(Message(command=Command.HIDE))
 
     def on_shutdown():
         print("Нажата комбинация Ctrl+Shift+Q. Завершение работы...")
@@ -168,7 +172,6 @@ class WxAppFrame(wx.Frame):
                 print(f"Не удалось установить атрибут окна для исключения из захвата: {e}")
 
         self.sct = mss.mss()
-        self.osd_enabled_by_user = True
 
         self.SetPosition((text_area['left'], text_area['top']))
         self.SetSize((text_area['width'], text_area['height']))
@@ -234,11 +237,14 @@ class WxAppFrame(wx.Frame):
                             self.Freeze()
                             self.Hide()
                             self.Thaw()
+                            print("Скрыли")
                         
                         def capture_and_restore():
                             capture_and_send()
+                            print("Сделали снимок")
                             if is_currently_visible:
                                 self.Show()
+                                print("Показали после скриншота")
                             
                         wx.CallAfter(capture_and_restore)
 
@@ -246,26 +252,15 @@ class WxAppFrame(wx.Frame):
                     self.Close()
                     return
 
-                case Command.TOGGLE_OSD:
-                    self.osd_enabled_by_user = not self.osd_enabled_by_user
-                    if self.osd_enabled_by_user:
-                        self.info_label.SetLabel("...")
-                        self.info_label.Wrap(text_area["width"] - 20)
-                        self.Show()
-                    else:
-                        self.Hide()
-                    print(f"OSD {'включен' if self.osd_enabled_by_user else 'выключен'} по горячей клавише.")
-
                 case Command.SHOW:
-                    if self.osd_enabled_by_user:
-                        self.info_label.SetLabel(message_dto.payload)
-                        self.info_label.Wrap(text_area["width"] - 20)
-                        self.Layout()
-                        self.Show()
+                    self.info_label.SetLabel(message_dto.payload)
+                    self.info_label.Wrap(text_area["width"] - 20)
+                    self.Layout()
+                    self.Show()
+                    print("Показали")
 
                 case Command.HIDE:
-                    if self.osd_enabled_by_user:
-                        self.Hide()
+                    self.Hide()
         except queue.Empty:
             pass
 
@@ -281,11 +276,14 @@ class WxAppFrame(wx.Frame):
         self.Destroy()
 
 if __name__ == "__main__":
-    worker = threading.Thread(target=worker_thread, daemon=True)
-    worker.start()
+    translator_worker = threading.Thread(target=translator_thread, daemon=True)
+    translator_worker.start()
     
-    listener = threading.Thread(target=setup_hotkey_listener, daemon=True)
-    listener.start()
+    hotkey_worker = threading.Thread(target=setup_hotkey_listener, daemon=True)
+    hotkey_worker.start()
+
+    refresher_worker = threading.Thread(target=refresher_thread, daemon=True)
+    refresher_worker.start()
 
     app = wx.App(False)
     frame = WxAppFrame(None, "OSD Переводчик")
