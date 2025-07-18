@@ -123,7 +123,7 @@ def refresher_thread():
             if osd_enabled_by_user:
                 gui_queue.put(Message(command=Command.REQUEST_CAPTURE))
             
-            shutdown_event.wait(0.5)
+            shutdown_event.wait(1)
 
 def setup_hotkey_listener():
     """
@@ -192,7 +192,6 @@ class PySideFrame(QWidget):
         self.setStyleSheet(f"""
             background-color: rgba(0, 0, 0, 70%);
             color: white;
-            padding: 10px;
         """)
 
         # Текстовая метка для вывода
@@ -202,10 +201,13 @@ class PySideFrame(QWidget):
         self.info_label.setFont(font)
         self.info_label.setWordWrap(True)
         self.info_label.setAlignment(Qt.AlignmentFlag.AlignTop | Qt.AlignmentFlag.AlignLeft)
+        # Убираем любые возможные внутренние отступы у самой метки
+        self.info_label.setStyleSheet("padding: 5px; margin: 0px; border: none;")
 
         # Размещение метки с помощью layout
         layout = QVBoxLayout(self)
         layout.addWidget(self.info_label)
+        layout.setContentsMargins(0, 0, 0, 0) # Убираем внутренние отступы у layout
         self.setLayout(layout)
         
         # Таймер для проверки очереди
