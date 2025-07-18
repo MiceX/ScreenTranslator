@@ -216,9 +216,24 @@ class WxAppFrame(wx.Frame):
 
             match message_dto.command:
                 case Command.REQUEST_CAPTURE:
+
+                    is_currently_visible = self.IsShown()
+                    
                     # Благодаря SetWindowDisplayAffinity (на Windows) нам больше не нужно прятать окно.
                     # Оно автоматически исключается из захвата экрана.
+                    if sys.platform != "win32":
+                        # Скрываем окно на время снимка, если оно видимо
+                        if is_currently_visible:
+                            self.Hide()
+                            wx.Yield() # Даем GUI время обработать событие скрытия
+
                     img = self._capture_screen()
+
+                    if sys.platform != "win32":
+                        if is_currently_visible:
+                            self.Show()
+
+
                     try:
                         capture_queue.put_nowait(img)
                     except queue.Full: pass
