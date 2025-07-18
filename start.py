@@ -3,6 +3,7 @@ import threading
 import queue
 from pynput import keyboard
 from enum import Enum, auto
+import time
 import sys
 import ctypes
 from dataclasses import dataclass
@@ -217,26 +218,29 @@ class WxAppFrame(wx.Frame):
             match message_dto.command:
                 case Command.REQUEST_CAPTURE:
 
-                    is_currently_visible = self.IsShown()
-                    
-                    # Благодаря SetWindowDisplayAffinity (на Windows) нам больше не нужно прятать окно.
-                    # Оно автоматически исключается из захвата экрана.
-                    if sys.platform != "win32":
-                        # Скрываем окно на время снимка, если оно видимо
+                    def capture_and_send():
+                        img = self._capture_screen()
+                        try:
+                            capture_queue.put_nowait(img)
+                        except queue.Full: pass
+
+                    # На Windows SetWindowDisplayAffinity решает проблему.
+                    # На других платформах (Linux/macOS) нужно временно убрать окно.
+                    if sys.platform == "win32":
+                        capture_and_send()
+                    else:
+                        is_currently_visible = self.IsShown()
                         if is_currently_visible:
+                            self.Freeze()
                             self.Hide()
-                            wx.Yield() # Даем GUI время обработать событие скрытия
-
-                    img = self._capture_screen()
-
-                    if sys.platform != "win32":
-                        if is_currently_visible:
-                            self.Show()
-
-
-                    try:
-                        capture_queue.put_nowait(img)
-                    except queue.Full: pass
+                            self.Thaw()
+                        
+                        def capture_and_restore():
+                            capture_and_send()
+                            if is_currently_visible:
+                                self.Show()
+                            
+                        wx.CallAfter(capture_and_restore)
 
                 case Command.STOP:
                     self.Close()
