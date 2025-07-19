@@ -166,8 +166,6 @@ def setup_hotkey_listener():
 
 class PySideFrame(QWidget):
     
-    was_hidden_signal = threading.Event()
-    
     def __init__(self):
         super().__init__()
 
@@ -221,11 +219,6 @@ class PySideFrame(QWidget):
         self.timer.timeout.connect(self.run_work)
         self.timer.start(100) # Проверять каждые 100 мс
 
-    def hideEvent(self, event):
-        """Перехватываем событие сокрытия окна."""
-        super().hideEvent(event) # Важно вызвать родительский метод
-        self.was_hidden_signal.set()
-
     def _capture_screen(self):
         sct_img = self.sct.grab(text_area)
         img = Image.frombytes("RGB", sct_img.size, sct_img.bgra, "raw", "BGRX")
@@ -252,16 +245,13 @@ class PySideFrame(QWidget):
                     if sys.platform == "win32" or not self.isVisible():
                         capture_and_send()
                     else:
-                        self.hide()
-
-                        self.was_hidden_signal.wait(1)
-                        self.was_hidden_signal.clear()
+                        self.info_label.hide()
                                                 
                         def capture_after_hide():
                             capture_and_send()
-                            self.show()
+                            self.info_label.show()
                             
-                        QTimer.singleShot(20, capture_after_hide)
+                        QTimer.singleShot(50, capture_after_hide)
 
                 case Command.STOP:
                     # Явно завершаем приложение по команде STOP.
