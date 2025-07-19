@@ -142,14 +142,14 @@ def setup_hotkey_listener():
             gui_queue.put(Message(command=Command.HIDE))
 
     def on_shutdown():
-        print("Нажата комбинация Ctrl+Shift+Q. Завершение работы...")
+        print("Нажата комбинация для завершения работы. Завершение работы...")
         shutdown_event.set()
         # Отправляем команду STOP, чтобы GUI-поток тоже корректно завершился
         gui_queue.put(Message(command=Command.STOP))
         return False
     
     with keyboard.GlobalHotKeys({
-        '<ctrl>+<shift>+q': on_shutdown,
+        '<ctrl>+<shift>+<f10>': on_shutdown,
         '<ctrl>+`': on_toggle_osd,
     }) as hotkey_listener:
         hotkey_listener.join()
