@@ -71,6 +71,10 @@ def translator_thread():
             try:
                 # Ждать, пока GUI-поток сделает снимок и положит его в очередь
                 img = capture_queue.get(block=True, timeout=0.5)
+                # При закрытии GUI отправляет None в очередь, чтобы "разбудить" этот поток.
+                # Получив None, мы должны корректно завершить цикл.
+                if img is None:
+                    break
             except queue.Empty:
                 continue
 
@@ -143,16 +147,18 @@ def setup_hotkey_listener():
 
     def on_shutdown():
         print("Нажата комбинация для завершения работы. Завершение работы...")
-        shutdown_event.set()
-        # Отправляем команду STOP, чтобы GUI-поток тоже корректно завершился
-        gui_queue.put(Message(command=Command.STOP))
-        return False
+        # Устанавливаем событие, только если оно еще не установлено,
+        # чтобы избежать многократной отправки команды STOP.
+        if not shutdown_event.is_set():
+            shutdown_event.set()
+            # Отправляем команду STOP, чтобы GUI-поток тоже корректно завершился
+            gui_queue.put(Message(command=Command.STOP))
     
     with keyboard.GlobalHotKeys({
         '<ctrl>+<shift>+<f10>': on_shutdown,
         '<ctrl>+`': on_toggle_osd,
     }) as hotkey_listener:
-        hotkey_listener.join()
+        shutdown_event.wait()
     
     print("Поток слушателя клавиатуры завершен.")
 
@@ -227,7 +233,8 @@ class PySideFrame(QWidget):
 
     def run_work(self):
         if shutdown_event.is_set():
-            self.close()
+            # Явно завершаем приложение. self.close() может быть недостаточно надежным из-за флагов окна.
+            QApplication.instance().quit()
             return
             
         try:
@@ -257,7 +264,8 @@ class PySideFrame(QWidget):
                         QTimer.singleShot(20, capture_after_hide)
 
                 case Command.STOP:
-                    self.close()
+                    # Явно завершаем приложение по команде STOP.
+                    QApplication.instance().quit()
                     return
 
                 case Command.SHOW:
@@ -294,6 +302,14 @@ if __name__ == "__main__":
     app = QApplication(sys.argv)
     frame = PySideFrame()
     # Не показываем окно сразу, ждем первой команды
-    sys.exit(app.exec())
+    exit_code = app.exec()
+
+    # После завершения GUI-цикла, дожидаемся корректного завершения всех потоков.
+    # shutdown_event уже должен быть установлен к этому моменту.
+    print("GUI завершен. Ожидание завершения рабочих потоков...")
+    translator_worker.join()
+    refresher_worker.join()
+    hotkey_worker.join()
 
     print("Программа завершена.")
+    sys.exit(exit_code)
