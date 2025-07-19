@@ -219,6 +219,31 @@ class PySideFrame(QWidget):
         self.timer.timeout.connect(self.run_work)
         self.timer.start(100) # Проверять каждые 100 мс
 
+    def set_text_and_adjust_font(self, text):
+        """
+        Устанавливает текст и подбирает размер шрифта, чтобы он поместился в QLabel.
+        """
+        # Начальные параметры
+        max_font_size = 16
+        min_font_size = 8
+
+        # Устанавливаем текст, чтобы виджет знал свое содержимое
+        self.info_label.setText(text)
+
+        # Цикл для уменьшения шрифта, если текст не помещается
+        for size in range(max_font_size, min_font_size - 1, -1):
+            font = self.info_label.font()
+            font.setPointSize(size)
+            self.info_label.setFont(font)
+
+            # Используем contentsRect(), чтобы получить область ВНУТРИ padding'а
+            content_rect = self.info_label.contentsRect()
+            font_metrics = self.info_label.fontMetrics()
+            bounding_rect = font_metrics.boundingRect(content_rect, Qt.AlignmentFlag.AlignTop | Qt.AlignmentFlag.AlignLeft | Qt.TextFlag.TextWordWrap, text)
+
+            if bounding_rect.height() <= content_rect.height():
+                break  # Выходим из цикла, т.к. нашли подходящий размер
+
     def _capture_screen(self):
         sct_img = self.sct.grab(text_area)
         img = Image.frombytes("RGB", sct_img.size, sct_img.bgra, "raw", "BGRX")
@@ -260,7 +285,7 @@ class PySideFrame(QWidget):
 
                 case Command.SHOW:
                     if message_dto.payload is not None:
-                        self.info_label.setText(message_dto.payload)
+                        self.set_text_and_adjust_font(message_dto.payload)
                     self.show()
 
                 case Command.HIDE:
