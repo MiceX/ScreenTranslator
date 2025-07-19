@@ -40,6 +40,8 @@ capture_queue = queue.Queue(maxsize=1)
 shutdown_event = threading.Event()
 
 osd_enabled_by_user = True
+osd_window_is_visible = True # Отвечает за видимость окна OSD
+win32_capture_mode = False
 
 # Область для распознавания
 text_area = {"top": 865, "left": 535, "width": 840, "height": 130}
@@ -123,11 +125,11 @@ def translator_thread():
     print("Поток-обработчик завершен.")
     
 def refresher_thread():
-        while not shutdown_event.is_set():
-            if osd_enabled_by_user:
-                gui_queue.put(Message(command=Command.REQUEST_CAPTURE))
-            
-            shutdown_event.wait(1)
+    while not shutdown_event.is_set():
+        if osd_enabled_by_user:
+            gui_queue.put(Message(command=Command.REQUEST_CAPTURE))
+        
+        shutdown_event.wait(1)
 
 def setup_hotkey_listener():
     """
@@ -135,15 +137,34 @@ def setup_hotkey_listener():
     """
     print("Поток слушателя клавиатуры запущен.")
     
-    def on_toggle_osd():
+    single_press_timer = None
+    
+    def perform_single_press_action():
+        """Действие для одиночного нажатия: переключение режима обновления."""
         global osd_enabled_by_user
-        print("Нажата комбинация Ctrl+`. Переключение OSD.")
         osd_enabled_by_user = not osd_enabled_by_user
-        if osd_enabled_by_user:
-            # Команда SHOW без payload просто покажет окно с последним текстом
-            gui_queue.put(Message(command=Command.SHOW, payload=None))
+        print(f"Одиночное нажатие: авто-обновление {'ВКЛЮЧЕНО' if osd_enabled_by_user else 'ВЫКЛЮЧЕНО'}.")
+
+    def on_toggle_osd():
+        nonlocal single_press_timer
+        global osd_window_is_visible
+
+        # Если таймер жив, значит, это второе нажатие (двойное)
+        if single_press_timer and single_press_timer.is_alive():
+            single_press_timer.cancel()
+            single_press_timer = None
+            
+            # Действие для двойного нажатия: переключение видимости окна
+            osd_window_is_visible = not osd_window_is_visible
+            print(f"Двойное нажатие: OSD {'ПОКАЗАНО' if osd_window_is_visible else 'СКРЫТО'}.")
+            if osd_window_is_visible:
+                gui_queue.put(Message(command=Command.SHOW, payload=None))
+            else:
+                gui_queue.put(Message(command=Command.HIDE))
         else:
-            gui_queue.put(Message(command=Command.HIDE))
+            # Первое нажатие: запускаем таймер, который выполнит действие для одиночного нажатия
+            single_press_timer = threading.Timer(0.5, perform_single_press_action) # 500ms
+            single_press_timer.start()
 
     def on_shutdown():
         print("Нажата комбинация для завершения работы. Завершение работы...")
@@ -186,8 +207,10 @@ class PySideFrame(QWidget):
             try:
                 hwnd = self.winId()
                 ctypes.windll.user32.SetWindowDisplayAffinity(hwnd, 0x00000011)
+                win32_capture_mode = True
             except Exception as e:
                 print(f"Не удалось установить атрибут окна для исключения из захвата: {e}")
+                win32_capture_mode = False
 
         self.sct = mss.mss()
 
@@ -267,7 +290,7 @@ class PySideFrame(QWidget):
                             capture_queue.put_nowait(img)
                         except queue.Full: pass
 
-                    if sys.platform == "win32" or not self.isVisible():
+                    if win32_capture_mode or not self.isVisible():
                         capture_and_send()
                     else:
                         self.info_label.hide()
