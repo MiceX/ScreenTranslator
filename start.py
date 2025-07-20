@@ -112,8 +112,12 @@ def translator_thread():
             # Исправление и подготовка текста
             processed_text = text.replace("|", "I").replace("\n", " ").strip()
 
-            # Перевод
-            translated_text = translate.translate(processed_text, "en", "ru")
+            try:
+                # Перевод
+                translated_text = translate.translate(processed_text, "en", "ru")
+            except Exception as e:
+                translated_text = processed_text
+                continue
 
             # Отправка результата в GUI
             gui_queue.put(Message(command=Command.SHOW, payload=translated_text))
