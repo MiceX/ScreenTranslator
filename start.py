@@ -8,6 +8,7 @@ from enum import Enum, auto
 import time
 import sys
 import ctypes
+import re
 from dataclasses import dataclass
 import mss
 import numpy as np
@@ -70,6 +71,9 @@ def translator_thread():
         last_text = None
 
         while not shutdown_event.is_set():
+            if not osd_window_is_visible:
+                continue
+
             try:
                 # Ждать, пока GUI-поток сделает снимок и положит его в очередь
                 img = capture_queue.get(block=True, timeout=0.5)
@@ -111,6 +115,8 @@ def translator_thread():
 
             # Исправление и подготовка текста
             processed_text = text.replace("|", "I").replace("\n", " ").strip()
+            # Заменяем '1' на 'I', если перед ним не цифра, а после - не цифра и не точка.
+            processed_text = re.sub(r'(?<!\d)1(?![.\d])', 'I', processed_text)
 
             try:
                 # Перевод
