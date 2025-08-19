@@ -114,9 +114,11 @@ def translator_thread():
             last_text = text
 
             # Исправление и подготовка текста
-            processed_text = text.replace("|", "I").replace("\n", " ").strip()
+            processed_text = text.replace("\n", " ").strip()
             # Заменяем '1' на 'I', если перед ним не цифра, а после - не цифра и не точка.
             processed_text = re.sub(r'(?<!\d)1(?![.\d])', 'I', processed_text)
+            processed_text = re.sub(r'(^|\s|[.,!?;()-])([/|])', r'\1I', processed_text)
+            processed_text = re.sub(r'([/|])', 'l', processed_text)
 
             try:
                 # Перевод
@@ -259,6 +261,19 @@ class PySideFrame(QWidget):
         # Начальные параметры
         max_font_size = 16
         min_font_size = 8
+        
+        # разбить слова длинее 30 букв пробелом
+        words = text.split(' ')
+        new_words = []
+        for word in words:
+            if len(word) > 30:
+                # Вставляем пробелы каждые 30 символов
+                new_word = ' '.join([word[i:i+30] for i in range(0, len(word), 30)])
+                new_words.append(new_word)
+            else:
+                new_words.append(word)
+        text = ' '.join(new_words)
+        
 
         # Устанавливаем текст, чтобы виджет знал свое содержимое
         self.info_label.setText(text)
@@ -278,9 +293,13 @@ class PySideFrame(QWidget):
                 break  # Выходим из цикла, т.к. нашли подходящий размер
 
     def _capture_screen(self):
-        sct_img = self.sct.grab(text_area)
-        img = Image.frombytes("RGB", sct_img.size, sct_img.bgra, "raw", "BGRX")
-        return img
+        try:
+            sct_img = self.sct.grab(text_area)
+            img = Image.frombytes("RGB", sct_img.size, sct_img.bgra, "raw", "BGRX")
+            return img
+        except Exception as e:
+            print(f"Ошибка при захвате экрана: {e}")
+            return None
 
     def run_work(self):
         if shutdown_event.is_set():
@@ -296,6 +315,8 @@ class PySideFrame(QWidget):
 
                     def capture_and_send():
                         img = self._capture_screen()
+                        if img is None:
+                            return
                         try:
                             capture_queue.put_nowait(img)
                         except queue.Full: pass
