@@ -5,7 +5,6 @@ import threading
 import queue
 from pynput import keyboard
 from enum import Enum, auto
-import time
 import sys
 import ctypes
 import re
