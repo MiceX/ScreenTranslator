@@ -1,10 +1,10 @@
 tesserocr
-pyside6
 argostranslate
 mss
 numpy
 opencv-python
-opencv-python-headless
+# opencv-python-headless
 pillow
 pynput
 scikit-image
+wxpython

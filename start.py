@@ -1,11 +1,9 @@
-from PySide6.QtWidgets import QApplication, QWidget, QLabel, QVBoxLayout
-from PySide6.QtCore import Qt, QTimer
-from PySide6.QtGui import QFont
+import sys
 import threading
 import queue
 from pynput import keyboard
 from enum import Enum, auto
-import sys
+import wx
 import ctypes
 import re
 from dataclasses import dataclass
@@ -41,7 +39,6 @@ shutdown_event = threading.Event()
 
 osd_enabled_by_user = True
 osd_window_is_visible = True # Отвечает за видимость окна OSD
-win32_capture_mode = False
 
 # Область для распознавания
 text_area = {"top": 865, "left": 535, "width": 840, "height": 130}
@@ -194,102 +191,115 @@ def setup_hotkey_listener():
     
     print("Поток слушателя клавиатуры завершен.")
 
-# --- GUI на PySide6 ---
+# --- GUI on wxPython ---
 
-class PySideFrame(QWidget):
-    
+class WxFrame(wx.Frame):
     def __init__(self):
-        super().__init__()
-
-        # Настройка флагов окна
-        self.setWindowFlags(
-            Qt.WindowType.FramelessWindowHint |    # Окно без рамки
-            Qt.WindowType.WindowDoesNotAcceptFocus |
-            Qt.WindowType.WindowTransparentForInput | # Прозрачность для кликов мыши
-            Qt.WindowType.SplashScreen |
-            Qt.WindowType.WindowStaysOnTopHint |   # Поверх всех окон
-            Qt.WindowType.Tool                   # Не показывать в панели задач
-        )
-        # Атрибут для поддержки полной прозрачности фона
-        self.setAttribute(Qt.WidgetAttribute.WA_TranslucentBackground)
-
-        # Исключение окна из захвата экрана на Windows
+        # DPI awareness
         if sys.platform == "win32":
             try:
-                hwnd = self.winId()
+                ctypes.windll.user32.SetProcessDPIAware()
+            except Exception as e:
+                print(f"Could not set DPI awareness: {e}")
+
+        # Frame style for an OSD window
+        style = (
+            wx.STAY_ON_TOP |
+            wx.FRAME_NO_TASKBAR |
+            wx.BORDER_NONE
+        )
+        
+        super().__init__(None, title="OSD", style=style)
+
+        # Make window click-through on Windows, similar to tkinter's `-disabled` attribute.
+        # This allows mouse events to "fall through" the window.
+        if sys.platform == "win32":
+            hwnd = self.GetHandle()
+            extended_style = ctypes.windll.user32.GetWindowLongW(hwnd, -20) # GWL_EXSTYLE
+            ctypes.windll.user32.SetWindowLongW(hwnd, -20, extended_style | 0x00000020) # WS_EX_TRANSPARENT
+
+        self.SetSize(text_area['width'], text_area['height'])
+        self.SetPosition((text_area['left'], text_area['top']))
+
+        # Transparency
+        self.SetTransparent(int(255 * 0.7))
+        
+        # Background color
+        self.bg_color = wx.Colour("black")
+        self.SetBackgroundColour(self.bg_color)
+
+        # Attempt to exclude from screen capture on Windows
+        self.win32_capture_mode = False
+        if sys.platform == "win32":
+            try:
+                hwnd = self.GetHandle()
+                # WDA_EXCLUDEFROMCAPTURE = 0x00000011
                 ctypes.windll.user32.SetWindowDisplayAffinity(hwnd, 0x00000011)
-                win32_capture_mode = True
+                self.win32_capture_mode = True
             except Exception as e:
                 print(f"Не удалось установить атрибут окна для исключения из захвата: {e}")
-                win32_capture_mode = False
 
         self.sct = mss.mss()
 
-        # Установка геометрии и стилей
-        self.setGeometry(text_area['left'], text_area['top'], text_area['width'], text_area['height'])
-        self.setStyleSheet(f"""
-            background-color: rgba(0, 0, 0, 70%);
-            color: white;
-        """)
+        # Main panel and sizer
+        self.panel = wx.Panel(self)
+        self.panel.SetBackgroundColour(self.bg_color)
+        self.sizer = wx.BoxSizer(wx.VERTICAL)
 
-        # Текстовая метка для вывода
-        self.info_label = QLabel("Запуск...", self)
-        font = QFont()
-        font.setPointSize(16)
-        self.info_label.setFont(font)
-        self.info_label.setWordWrap(True)
-        self.info_label.setAlignment(Qt.AlignmentFlag.AlignTop | Qt.AlignmentFlag.AlignLeft)
-        # Убираем любые возможные внутренние отступы у самой метки
-        self.info_label.setStyleSheet("padding: 5px; margin: 0px; border: none;")
-
-        # Размещение метки с помощью layout
-        layout = QVBoxLayout(self)
-        layout.addWidget(self.info_label)
-        layout.setContentsMargins(0, 0, 0, 0) # Убираем внутренние отступы у layout
-        self.setLayout(layout)
+        # Info Label
+        self.info_label = wx.StaticText(
+            self.panel,
+            label="Запуск...",
+            style=wx.ALIGN_LEFT | wx.ST_NO_AUTORESIZE
+        )
+        self.info_label.SetForegroundColour(wx.Colour("white"))
         
-        # Таймер для проверки очереди
-        self.timer = QTimer(self)
-        self.timer.timeout.connect(self.run_work)
-        self.timer.start(100) # Проверять каждые 100 мс
+        self.sizer.Add(self.info_label, 1, wx.EXPAND | wx.ALL, 10)
+        self.panel.SetSizer(self.sizer)
+        
+        self.set_text_and_adjust_font("Запуск...")
+
+        self.Bind(wx.EVT_CLOSE, self.on_closing)
+
+        # Timer for processing queue
+        self.timer = wx.Timer(self)
+        self.Bind(wx.EVT_TIMER, self.run_work, self.timer)
+        self.timer.Start(100) # Poll every 100ms
 
     def set_text_and_adjust_font(self, text):
-        """
-        Устанавливает текст и подбирает размер шрифта, чтобы он поместился в QLabel.
-        """
-        # Начальные параметры
         max_font_size = 16
         min_font_size = 8
-        
-        # разбить слова длинее 30 букв пробелом
+
         words = text.split(' ')
         new_words = []
         for word in words:
             if len(word) > 30:
-                # Вставляем пробелы каждые 30 символов
                 new_word = ' '.join([word[i:i+30] for i in range(0, len(word), 30)])
                 new_words.append(new_word)
             else:
                 new_words.append(word)
         text = ' '.join(new_words)
-        
 
-        # Устанавливаем текст, чтобы виджет знал свое содержимое
-        self.info_label.setText(text)
+        # panel_width, _ = self.GetClientSize()
+        target_width, target_height = self.panel.GetSize()
+        target_width -= 20
+        target_height -= 20
 
-        # Цикл для уменьшения шрифта, если текст не помещается
         for size in range(max_font_size, min_font_size - 1, -1):
-            font = self.info_label.font()
-            font.setPointSize(size)
-            self.info_label.setFont(font)
+            f = wx.Font(size, wx.FONTFAMILY_DEFAULT, wx.FONTSTYLE_NORMAL, wx.FONTWEIGHT_NORMAL)
+            self.info_label.SetFont(f)
+            
+            self.info_label.SetLabel(text)
+            self.info_label.Wrap(target_width)
+            self.sizer.Layout()
+            
+            req_height = self.panel.GetBestHeight(target_width)
 
-            # Используем contentsRect(), чтобы получить область ВНУТРИ padding'а
-            content_rect = self.info_label.contentsRect()
-            font_metrics = self.info_label.fontMetrics()
-            bounding_rect = font_metrics.boundingRect(content_rect, Qt.AlignmentFlag.AlignTop | Qt.AlignmentFlag.AlignLeft | Qt.TextFlag.TextWordWrap, text)
-
-            if bounding_rect.height() <= content_rect.height():
-                break  # Выходим из цикла, т.к. нашли подходящий размер
+            print(f"{target_width}x{target_height} -> {size} {req_height}")
+            if req_height <= target_height:
+                break
+        
+        self.Layout()
 
     def _capture_screen(self):
         try:
@@ -300,62 +310,70 @@ class PySideFrame(QWidget):
             print(f"Ошибка при захвате экрана: {e}")
             return None
 
-    def run_work(self):
+    def run_work(self, event):
         if shutdown_event.is_set():
-            # Явно завершаем приложение. self.close() может быть недостаточно надежным из-за флагов окна.
-            QApplication.instance().quit()
+            if not self.IsBeingDeleted():
+                self.shutdown()
             return
-            
+
         try:
             message_dto: Message = gui_queue.get_nowait()
 
             match message_dto.command:
                 case Command.REQUEST_CAPTURE:
-
                     def capture_and_send():
                         img = self._capture_screen()
                         if img is None:
                             return
                         try:
                             capture_queue.put_nowait(img)
-                        except queue.Full: pass
+                        except queue.Full:
+                            pass
 
-                    if win32_capture_mode or not self.isVisible():
+                    if self.win32_capture_mode or not self.IsShown():
                         capture_and_send()
                     else:
-                        self.info_label.hide()
-                                                
+                        self.SetTransparent(0)
+
                         def capture_after_hide():
                             capture_and_send()
-                            self.info_label.show()
-                            
-                        QTimer.singleShot(50, capture_after_hide)
+                            if osd_window_is_visible:
+                                self.SetTransparent(int(255 * 0.7))
+
+                        wx.CallLater(20, capture_after_hide)
 
                 case Command.STOP:
-                    # Явно завершаем приложение по команде STOP.
-                    QApplication.instance().quit()
+                    self.shutdown()
                     return
 
                 case Command.SHOW:
                     if message_dto.payload is not None:
                         self.set_text_and_adjust_font(message_dto.payload)
-                    self.show()
+                    if osd_window_is_visible:
+                        self.Show()
 
                 case Command.HIDE:
-                    self.hide()
+                    self.Hide()
         except queue.Empty:
             pass
 
-    def closeEvent(self, event):
+    def on_closing(self, event):
         if not shutdown_event.is_set():
             print("Получен запрос на закрытие окна.")
             shutdown_event.set()
+        self.shutdown()
+
+    def shutdown(self):
+        print("GUI: закрытие.")
+        if self.timer.IsRunning():
+            self.timer.Stop()
+        try:
+            capture_queue.put_nowait(None)
+        except queue.Full:
+            pass
         
-        self.timer.stop()
-        try: capture_queue.put_nowait(None)
-        except queue.Full: pass
-        
-        event.accept()
+        if not self.IsBeingDeleted():
+            wx.CallAfter(self.Destroy)
 
 if __name__ == "__main__":
     translator_worker = threading.Thread(target=translator_thread, daemon=True)
@@ -367,13 +385,13 @@ if __name__ == "__main__":
     refresher_worker = threading.Thread(target=refresher_thread, daemon=True)
     refresher_worker.start()
 
-    app = QApplication(sys.argv)
-    frame = PySideFrame()
-    # Не показываем окно сразу, ждем первой команды
-    exit_code = app.exec()
+    app = wx.App(False)
+    gui_app = WxFrame()
+    gui_app.Hide()
+    app.MainLoop()
+    exit_code = 0
 
     # После завершения GUI-цикла, дожидаемся корректного завершения всех потоков.
-    # shutdown_event уже должен быть установлен к этому моменту.
     print("GUI завершен. Ожидание завершения рабочих потоков...")
     translator_worker.join()
     refresher_worker.join()

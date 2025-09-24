@@ -20,10 +20,10 @@ def detect_text_with_mser():
         # Конвертируем изображение из формата mss в формат OpenCV (numpy array)
         # mss захватывает в BGRA, поэтому конвертируем в BGR для отображения
         # и в серый для анализа.
-        img_bgr = np.array(sct_img)
+        img_bgra = np.array(sct_img)
         
         # Конвертируем в оттенки серого, так как MSER работает с одноканальными изображениями
-        gray = cv2.cvtColor(img_bgr, cv2.COLOR_BGRA2GRAY)
+        gray = cv2.cvtColor(img_bgra, cv2.COLOR_BGRA2GRAY)
 
     print("Ищу текстовые блоки с помощью MSER...")
     
@@ -43,10 +43,13 @@ def detect_text_with_mser():
         x, y, w, h = box
         print(f"  Блок {i+1}: ({x}, {y}, {w}, {h})")
         # Рисуем прямоугольник вокруг каждого найденного блока на цветном изображении
-        cv2.rectangle(img_bgr, (x, y), (x + w, y + h), (0, 255, 0), 2)
+        cv2.rectangle(img_bgra, (x, y), (x + w, y + h), (0, 255, 0), 2)
 
     # Показываем изображение с выделенными блоками
-    cv2.imshow("Обнаруженные текстовые блоки (MSER)", img_bgr)
+    window_name = "Обнаруженные текстовые блоки (MSER)"
+    # Создаем окно, которое можно изменять в размере, чтобы оно поместилось на экране
+    cv2.namedWindow(window_name, cv2.WINDOW_NORMAL)
+    cv2.imshow(window_name, img_bgra)
     print("\nНажмите любую клавишу в окне с изображением, чтобы закрыть его.")
     cv2.waitKey(0)
     cv2.destroyAllWindows()

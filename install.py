@@ -2,7 +2,7 @@ import argostranslate.package
 import argostranslate.translate
 import requests
 
-url = "https://github.com/tesseract-ocr/tessdata_best/raw/refs/heads/main/eng.traineddata"
+url = 'https://github.com/tesseract-ocr/tessdata_best/raw/refs/heads/main/eng.traineddata'
 filename = "eng.traineddata"
 
 try:
