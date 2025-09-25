@@ -204,11 +204,14 @@ class WxFrame(wx.Frame):
 
         # Frame style for an OSD window
         style = (
+            wx.CLIP_CHILDREN |
             wx.STAY_ON_TOP |
             wx.FRAME_NO_TASKBAR |
-            wx.BORDER_NONE
+            wx.NO_BORDER |
+            # wx.FRAME_SHAPED |
+            wx.TRANSPARENT_WINDOW
         )
-        
+
         super().__init__(None, title="OSD", style=style)
 
         # Make window click-through on Windows, similar to tkinter's `-disabled` attribute.
@@ -267,9 +270,6 @@ class WxFrame(wx.Frame):
         self.timer.Start(100) # Poll every 100ms
 
     def set_text_and_adjust_font(self, text):
-        max_font_size = 16
-        min_font_size = 8
-
         words = text.split(' ')
         new_words = []
         for word in words:
@@ -279,6 +279,18 @@ class WxFrame(wx.Frame):
             else:
                 new_words.append(word)
         text = ' '.join(new_words)
+
+        f = wx.Font(14, wx.FONTFAMILY_DEFAULT, wx.FONTSTYLE_NORMAL, wx.FONTWEIGHT_NORMAL)
+        self.info_label.SetFont(f)
+        
+        self.info_label.SetLabel(text)
+        
+        return
+    
+        # надо переработать подбор размера шрифта
+
+        max_font_size = 16
+        min_font_size = 8
 
         # panel_width, _ = self.GetClientSize()
         target_width, target_height = self.panel.GetSize()
@@ -291,11 +303,14 @@ class WxFrame(wx.Frame):
             
             self.info_label.SetLabel(text)
             self.info_label.Wrap(target_width)
-            self.sizer.Layout()
-            
-            req_height = self.panel.GetBestHeight(target_width)
+            self.panel.Layout()
 
-            print(f"{target_width}x{target_height} -> {size} {req_height}")
+            # После того как Wrap() и Layout() отработали,
+            # GetSize() вернет реальную высоту, которую занял виджет.
+            # Это самый надежный способ узнать высоту текста с переносами.
+            req_height = self.info_label.GetBestSize().GetHeight()
+            
+            print(f'Высота {req_height}px <= {target_height}px. Размер шрифта {size}')
             if req_height <= target_height:
                 break
         
@@ -340,7 +355,7 @@ class WxFrame(wx.Frame):
                             if osd_window_is_visible:
                                 self.SetTransparent(int(255 * 0.7))
 
-                        wx.CallLater(20, capture_after_hide)
+                        wx.CallLater(50, capture_after_hide)
 
                 case Command.STOP:
                     self.shutdown()
