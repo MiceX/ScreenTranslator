@@ -270,6 +270,8 @@ class WxFrame(wx.Frame):
         self.timer.Start(100) # Poll every 100ms
 
     def set_text_and_adjust_font(self, text):
+        # найти в text последовательность из более чем трех одинаковых символов и оставить только три таких символа
+        text = re.sub(r'(\w)\1{3,}', r'\1\1\1', text)
         words = text.split(' ')
         new_words = []
         for word in words:
